@@ -3,13 +3,16 @@ from ctypes import wintypes
 import time
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from collections import deque
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+import csv
+from datetime import datetime
+import os
 
 # =============================
-# Backend: API Windows Network
+# Backend: API Windows Network (giữ nguyên)
 # =============================
 iphlpapi = ctypes.WinDLL("Iphlpapi.dll")
 
@@ -84,7 +87,7 @@ FreeMibTable.argtypes = [ctypes.c_void_p]
 
 
 def get_wifi_interfaces():
-    """Lấy danh sách các Wi-Fi interface khả dụng"""
+    """Return list of tuples: (InterfaceIndex, Description, row_struct) for Type == WIFI"""
     table_ptr = ctypes.POINTER(MIB_IF_TABLE2)()
     res = GetIfTable2(ctypes.byref(table_ptr))
     if res != 0:
@@ -99,153 +102,336 @@ def get_wifi_interfaces():
     wifi_list = []
     for row in entries:
         if row.Type == MIB_IF_TYPE_WIFI:
-            wifi_list.append((row.InterfaceIndex, row.Description.strip(), row))
-
+            desc = row.Description.strip()
+            wifi_list.append((row.InterfaceIndex, desc, row))
     FreeMibTable(table_ptr)
     return wifi_list
 
-
 # =============================
-# App UI
+# UI App (improved)
 # =============================
 class NetworkMonitorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("📶 Wi-Fi Network Monitor")
-        self.root.geometry("1000x600")
-        self.root.minsize(900, 500)
+        self.root.title("Wi-Fi Network Monitor")
+        self.root.geometry("1100x660")
+        self.root.minsize(900, 520)
 
-        # Layout chính
-        self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_columnconfigure(0, weight=1, minsize=280)  # panel trái
-        self.root.grid_columnconfigure(1, weight=3)               # panel phải
+        # Grid base
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_columnconfigure(1, weight=1)
 
-        # Panel cấu hình
-        self.config_frame = ttk.LabelFrame(self.root, text="⚙️ Cấu hình")
-        self.config_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        # Header
+        header = tk.Frame(self.root, bg="#1f2d3d", height=64)
+        header.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        header.grid_propagate(False)
+        tk.Label(header, text="📶 Wi-Fi Network Monitor", bg="#1f2d3d", fg="white",
+                 font=("Segoe UI", 18, "bold")).pack(side="left", padx=16)
 
-        # Panel biểu đồ
-        self.chart_frame = ttk.LabelFrame(self.root, text="📊 Biểu đồ tốc độ")
-        self.chart_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        # Left control panel
+        control = ttk.Frame(self.root, padding=12)
+        control.grid(row=1, column=0, sticky="nsew", padx=(12,6), pady=12)
+        control.columnconfigure(0, weight=1)
 
-        # --- Config panel ---
-        ttk.Label(self.config_frame, text="Chọn Wi-Fi:").pack(pady=10)
-        self.combo = ttk.Combobox(self.config_frame, state="readonly", width=28)
-        self.combo.pack(pady=5, padx=10, fill="x")
+        # Right chart panel
+        chart_panel = ttk.Frame(self.root, padding=6)
+        chart_panel.grid(row=1, column=1, sticky="nsew", padx=(6,12), pady=12)
+        chart_panel.rowconfigure(0, weight=1)
+        chart_panel.columnconfigure(0, weight=1)
 
-        self.start_btn = tk.Button(self.config_frame, text="▶ Start Monitor", bg="green", fg="white",
-                                   command=self.start_monitor)
-        self.start_btn.pack(pady=10, ipadx=10, ipady=5)
+        # ----- Left: controls -----
+        ttk.Label(control, text="Adapter Wi-Fi:", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
+        self.combo = ttk.Combobox(control, state="readonly")
+        self.combo.grid(row=1, column=0, sticky="ew", pady=(6,8))
 
-        self.stop_btn = tk.Button(self.config_frame, text="■ Stop", bg="red", fg="white",
-                                  command=self.stop_monitor, state="disabled")
-        self.stop_btn.pack(pady=5, ipadx=10, ipady=5)
+        btn_frame = ttk.Frame(control)
+        btn_frame.grid(row=2, column=0, sticky="ew", pady=(0,8))
+        btn_frame.columnconfigure((0,1,2), weight=1)
 
-        self.status_label = ttk.Label(self.config_frame, text="Chưa theo dõi adapter nào", wraplength=250)
-        self.status_label.pack(pady=15)
+        self.refresh_btn = ttk.Button(btn_frame, text="🔄 Refresh", command=self.reload_adapters)
+        self.refresh_btn.grid(row=0, column=0, padx=4, sticky="ew")
+        self.start_btn = ttk.Button(btn_frame, text="▶ Start", command=self.start_monitor)
+        self.start_btn.grid(row=0, column=1, padx=4, sticky="ew")
+        self.stop_btn = ttk.Button(btn_frame, text="⏹ Stop", command=self.stop_monitor, state="disabled")
+        self.stop_btn.grid(row=0, column=2, padx=4, sticky="ew")
 
-        # --- Chart panel ---
-        self.chart_frame.rowconfigure(0, weight=1)
-        self.chart_frame.columnconfigure(0, weight=1)
+        # status/info box
+        info_frame = ttk.LabelFrame(control, text="Thông tin (Realtime)", padding=8)
+        info_frame.grid(row=3, column=0, sticky="nsew", pady=(8,8))
+        info_frame.columnconfigure(1, weight=1)
 
-        self.fig = Figure(figsize=(6, 4), dpi=100)
+        ttk.Label(info_frame, text="Status:").grid(row=0, column=0, sticky="w")
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(info_frame, textvariable=self.status_var).grid(row=0, column=1, sticky="w")
+
+        ttk.Label(info_frame, text="Download:").grid(row=1, column=0, sticky="w", pady=(6,0))
+        self.dl_var = tk.StringVar(value="0.00 Mbps")
+        ttk.Label(info_frame, textvariable=self.dl_var, font=("Segoe UI", 10, "bold")).grid(row=1, column=1, sticky="w", pady=(6,0))
+
+        ttk.Label(info_frame, text="Upload:").grid(row=2, column=0, sticky="w", pady=(6,0))
+        self.ul_var = tk.StringVar(value="0.00 Mbps")
+        ttk.Label(info_frame, textvariable=self.ul_var, font=("Segoe UI", 10, "bold")).grid(row=2, column=1, sticky="w", pady=(6,0))
+
+        ttk.Label(info_frame, text="Link speed:").grid(row=3, column=0, sticky="w", pady=(6,0))
+        self.link_var = tk.StringVar(value="-- Mbps")
+        ttk.Label(info_frame, textvariable=self.link_var).grid(row=3, column=1, sticky="w", pady=(6,0))
+
+        # Export / clear
+        util_frame = ttk.Frame(control)
+        util_frame.grid(row=4, column=0, sticky="ew", pady=(8,0))
+        util_frame.columnconfigure((0,1), weight=1)
+        self.export_btn = ttk.Button(util_frame, text="💾 Export CSV", command=self.export_csv, state="disabled")
+        self.export_btn.grid(row=0, column=0, padx=4, sticky="ew")
+        self.clear_btn = ttk.Button(util_frame, text="🧹 Clear Data", command=self.clear_data)
+        self.clear_btn.grid(row=0, column=1, padx=4, sticky="ew")
+
+        # Footer note
+        ttk.Label(control, text="Ghi chú: Đo bằng API Win32 (GetIfTable2)", foreground="gray").grid(row=5, column=0, sticky="w", pady=(12,0))
+
+        # ----- Right: chart -----
+        self.fig = Figure(figsize=(6,4), dpi=100)
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_title("Wi-Fi Speed (Mbps)")
+        self.ax.set_title("Network Throughput (Mbps)")
         self.ax.set_xlabel("Time (s)")
         self.ax.set_ylabel("Mbps")
-        self.ax.grid(True)
-        self.line1, = self.ax.plot([], [], label="Download", color="blue")
-        self.line2, = self.ax.plot([], [], label="Upload", color="red")
-        self.ax.legend()
+        self.ax.grid(True, alpha=0.3)
+        self.line_down, = self.ax.plot([], [], label="Download", linewidth=2, color="#1f77b4")
+        self.line_up, = self.ax.plot([], [], label="Upload", linewidth=2, color="#ff7f0e")
+        self.ax.legend(loc="upper right")
 
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=chart_panel)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-        self.canvas.draw()
 
-        # Data
-        self.times = deque(maxlen=60)
-        self.downloads = deque(maxlen=60)
-        self.uploads = deque(maxlen=60)
+        # small status under chart
+        bottom_info = ttk.Frame(chart_panel)
+        bottom_info.grid(row=1, column=0, sticky="ew", pady=(8,0))
+        bottom_info.columnconfigure(0, weight=1)
+        self.chart_status = ttk.Label(bottom_info, text="No data", anchor="w")
+        self.chart_status.grid(row=0, column=0, sticky="w")
 
+        # Data containers
+        self.max_points = 60
+        self.times = deque(maxlen=self.max_points)
+        self.downloads = deque(maxlen=self.max_points)
+        self.uploads = deque(maxlen=self.max_points)
+
+        # Monitoring control
         self.monitoring = False
-        self.thread = None
+        self.monitor_thread = None
+        self.csv_file = None
+        self.csv_writer = None
 
-        # Load Wi-Fi list
-        self.load_wifi_list()
+        # Init adapters
+        self.reload_adapters()
 
-    def load_wifi_list(self):
-        wifi_list = get_wifi_interfaces()
-        if not wifi_list:
-            self.combo["values"] = []
-        else:
-            self.combo["values"] = [w[1] for w in wifi_list]
-            self.if_map = {w[1]: w for w in wifi_list}
+    # ---------- UI helpers ----------
+    def reload_adapters(self):
+        try:
+            wifis = get_wifi_interfaces()
+            if not wifis:
+                self.combo["values"] = []
+                self.combo.set('')
+                messagebox.showinfo("No Wi-Fi", "Không tìm thấy adapter Wi-Fi trên hệ thống.")
+                return
+            # map desc to entry
+            self.if_map = {f"{desc} (idx={idx})": (idx, desc) for idx, desc, _ in wifis}
+            names = list(self.if_map.keys())
+            self.combo["values"] = names
             self.combo.current(0)
+            self.status_var.set(f"{len(names)} Wi-Fi adapter(s) found")
+        except Exception as e:
+            messagebox.showerror("Error", f"Lỗi khi load adapter: {e}")
 
+    def set_status(self, text):
+        self.status_var.set(text)
+
+    # ---------- Monitor logic (keeps original backend usage) ----------
     def start_monitor(self):
-        if not self.combo.get():
-            messagebox.showwarning("Cảnh báo", "Chưa chọn Wi-Fi adapter!")
+        if not getattr(self, "if_map", None):
+            messagebox.showwarning("Chưa chọn", "Vui lòng refresh và chọn adapter Wi-Fi.")
+            return
+        sel = self.combo.get()
+        if not sel:
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn adapter Wi-Fi.")
+            return
+        self.iface_index, self.iface_desc = self.if_map[sel]
+
+        # get initial counters & link speed
+        iface_row = self._get_iface_row(self.iface_index)
+        if not iface_row:
+            messagebox.showerror("Lỗi", "Không thể đọc thông tin adapter đã chọn.")
             return
 
-        desc = self.combo.get()
-        self.iface_index, self.iface_name, iface = self.if_map[desc]
+        self.in_old, self.out_old = iface_row.InOctets, iface_row.OutOctets
+        try:
+            link_mbps = iface_row.ReceiveLinkSpeed / 1e6
+            self.link_var.set(f"{link_mbps:.1f} Mbps")
+        except Exception:
+            self.link_var.set("-- Mbps")
 
-        self.status_label.config(text=f"Đang theo dõi: {self.iface_name}")
+        # enable CSV export
+        self.export_btn.config(state="normal")
 
         self.monitoring = True
         self.start_btn.config(state="disabled")
-        self.stop_btn.config(state="normal")
-
-        self.times.clear()
-        self.downloads.clear()
-        self.uploads.clear()
-        self.start_time = time.time()
-        self.in_old, self.out_old = iface.InOctets, iface.OutOctets
-
-        self.thread = threading.Thread(target=self.update_loop, daemon=True)
-        self.thread.start()
+        self.stop_btn.config(state="enabled")
+        self.set_status("Monitoring...")
+        # start thread
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread.start()
 
     def stop_monitor(self):
         self.monitoring = False
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
+        self.set_status("Stopped")
 
-    def update_loop(self):
+        # close csv if open
+        if self.csv_file:
+            try:
+                self.csv_file.close()
+            except:
+                pass
+            self.csv_file = None
+            self.csv_writer = None
+            self.export_btn.config(state="normal")
+
+    def _get_iface_row(self, index):
+        table_ptr = ctypes.POINTER(MIB_IF_TABLE2)()
+        res = GetIfTable2(ctypes.byref(table_ptr))
+        if res != 0:
+            return None
+        table = table_ptr.contents
+        entries = ctypes.cast(
+            ctypes.addressof(table.Table),
+            ctypes.POINTER(MIB_IF_ROW2 * table.NumEntries),
+        ).contents
+        iface = None
+        for row in entries:
+            if row.InterfaceIndex == index:
+                iface = row
+                break
+        FreeMibTable(table_ptr)
+        return iface
+
+    def _monitor_loop(self):
+        start_time = time.time()
         while self.monitoring:
             time.sleep(1)
-            iface = None
-            for idx, name, row in get_wifi_interfaces():
-                if idx == self.iface_index:
-                    iface = row
-                    break
-            if not iface:
+            # read fresh table and find selected interface
+            iface_row = self._get_iface_row(self.iface_index)
+            if not iface_row:
+                self.set_status("Adapter lost")
                 break
 
-            in_new, out_new = iface.InOctets, iface.OutOctets
-            down = (in_new - self.in_old) * 8 / 1e6
-            up = (out_new - self.out_old) * 8 / 1e6
+            in_new, out_new = iface_row.InOctets, iface_row.OutOctets
+            # compute Mbps (bits/sec) over 1s interval
+            down_mbps = (in_new - self.in_old) * 8 / 1e6
+            up_mbps = (out_new - self.out_old) * 8 / 1e6
             self.in_old, self.out_old = in_new, out_new
 
-            t = int(time.time() - self.start_time)
-            self.times.append(t)
-            self.downloads.append(down)
-            self.uploads.append(up)
+            elapsed = int(time.time() - start_time)
+            self.times.append(elapsed)
+            self.downloads.append(down_mbps)
+            self.uploads.append(up_mbps)
 
+            # update numeric labels
+            self.root.after(0, lambda: self.dl_var.set(f"{down_mbps:.2f} Mbps"))
+            self.root.after(0, lambda: self.ul_var.set(f"{up_mbps:.2f} Mbps"))
+            try:
+                link_mbps = iface_row.ReceiveLinkSpeed / 1e6
+                self.root.after(0, lambda: self.link_var.set(f"{link_mbps:.1f} Mbps"))
+            except Exception:
+                pass
+
+            # write CSV if active
+            if self.csv_writer:
+                try:
+                    self.csv_writer.writerow([
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        elapsed,
+                        round(down_mbps, 4),
+                        round(up_mbps, 4)
+                    ])
+                    self.csv_file.flush()
+                except Exception:
+                    pass
+
+            # update chart
             self.root.after(0, self.update_plot)
 
+        # thread exit
+        self.set_status("Idle")
+
+    # ---------- plotting ----------
     def update_plot(self):
-        self.line1.set_data(self.times, self.downloads)
-        self.line2.set_data(self.times, self.uploads)
-        self.ax.set_xlim(max(0, self.times[0] if self.times else 0),
-                         (self.times[-1] if self.times else 60))
-        ymax = max(5, max(self.downloads + self.uploads, default=0) * 1.2)
+        if not self.times:
+            return
+        xs = list(self.times)
+        ys_d = list(self.downloads)
+        ys_u = list(self.uploads)
+        self.line_down.set_data(xs, ys_d)
+        self.line_up.set_data(xs, ys_u)
+        self.ax.set_xlim(xs[0], xs[-1])
+        ymax = max(5, max(ys_d + ys_u, default=0) * 1.2)
         self.ax.set_ylim(0, ymax)
         self.canvas.draw_idle()
+        self.chart_status.config(text=f"Showing last {len(xs)} samples")
 
+    # ---------- CSV export ----------
+    def export_csv(self):
+        if not self.times:
+            messagebox.showwarning("No Data", "Không có dữ liệu để xuất.")
+            return
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Save monitoring data"
+        )
+        if not filename:
+            return
+        try:
+            with open(filename, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Timestamp", "Time(s)", "Download(Mbps)", "Upload(Mbps)"])
+                # We don't keep timestamps per-row in memory, only elapsed seconds; approximate by back-calculating
+                # Better: use csv_writer live during monitoring (we support both). For now write from buffers.
+                start = int(time.time()) - (self.times[-1] if self.times else 0)
+                for t, d, u in zip(self.times, self.downloads, self.uploads):
+                    ts = datetime.fromtimestamp(start + t).strftime("%Y-%m-%d %H:%M:%S")
+                    writer.writerow([ts, t, f"{d:.4f}", f"{u:.4f}"])
+            messagebox.showinfo("Exported", f"Data exported to {filename}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export CSV: {e}")
 
+    def clear_data(self):
+        self.times.clear()
+        self.downloads.clear()
+        self.uploads.clear()
+        # reset labels
+        self.dl_var.set("0.00 Mbps")
+        self.ul_var.set("0.00 Mbps")
+        self.link_var.set("-- Mbps")
+        self.ax.clear()
+        self.ax.set_title("Network Throughput (Mbps)")
+        self.ax.set_xlabel("Time (s)")
+        self.ax.set_ylabel("Mbps")
+        self.ax.grid(True, alpha=0.3)
+        self.line_down, = self.ax.plot([], [], label="Download", linewidth=2, color="#1f77b4")
+        self.line_up, = self.ax.plot([], [], label="Upload", linewidth=2, color="#ff7f0e")
+        self.ax.legend(loc="upper right")
+        self.canvas.draw_idle()
+        self.chart_status.config(text="Cleared")
+
+# =============================
+# Run App
+# =============================
 if __name__ == "__main__":
     root = tk.Tk()
     style = ttk.Style()
-    style.theme_use("clam")
+    try:
+        style.theme_use("clam")
+    except:
+        pass
     app = NetworkMonitorApp(root)
     root.mainloop()
