@@ -34,7 +34,7 @@ class MIB_IF_ROW2(ctypes.Structure):
         ("GUID", GUID),
         ("Alias", wintypes.WCHAR * 257),
         ("Description", wintypes.WCHAR * 257),
-        ("PhysicalAddressLength", wintypes.UINT),
+        ("Physi calAddressLength", wintypes.UINT),
         ("PhysicalAddress", wintypes.BYTE * 32),
         ("PermanentPhysicalAddress", wintypes.BYTE * 32),
         ("Mtu", wintypes.ULONG),
@@ -113,7 +113,7 @@ def get_wifi_interfaces():
 class NetworkMonitorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Wi-Fi Network Monitor")
+        self.root.title("Network Monitor")
         self.root.geometry("1100x660")
         self.root.minsize(900, 520)
 
@@ -125,7 +125,7 @@ class NetworkMonitorApp:
         header = tk.Frame(self.root, bg="#1f2d3d", height=64)
         header.grid(row=0, column=0, columnspan=2, sticky="nsew")
         header.grid_propagate(False)
-        tk.Label(header, text="📶 Wi-Fi Network Monitor", bg="#1f2d3d", fg="white",
+        tk.Label(header, text="📶 Network Monitor", bg="#1f2d3d", fg="white",
                  font=("Segoe UI", 18, "bold")).pack(side="left", padx=16)
 
         # Left control panel
@@ -226,6 +226,26 @@ class NetworkMonitorApp:
 
     # ---------- UI helpers ----------
     def reload_adapters(self):
+        # ✅ Bổ sung: reset toàn bộ dữ liệu khi refresh
+        self.times.clear()
+        self.downloads.clear()
+        self.uploads.clear()
+        self.dl_var.set("0.00 Mbps")
+        self.ul_var.set("0.00 Mbps")
+        self.link_var.set("-- Mbps")
+        self.status_var.set("Ready")
+        self.chart_status.config(text="Cleared")
+        self.ax.clear()
+        self.ax.set_title("Network Throughput (Mbps)")
+        self.ax.set_xlabel("Time (s)")
+        self.ax.set_ylabel("Mbps")
+        self.ax.grid(True, alpha=0.3)
+        self.line_down, = self.ax.plot([], [], label="Download", linewidth=2, color="#1f77b4")
+        self.line_up, = self.ax.plot([], [], label="Upload", linewidth=2, color="#ff7f0e")
+        self.ax.legend(loc="upper right")
+        self.canvas.draw_idle()
+        # === Kết thúc phần thêm ===
+
         try:
             wifis = get_wifi_interfaces()
             if not wifis:
@@ -233,7 +253,6 @@ class NetworkMonitorApp:
                 self.combo.set('')
                 messagebox.showinfo("No Wi-Fi", "Không tìm thấy adapter Wi-Fi trên hệ thống.")
                 return
-            # map desc to entry
             self.if_map = {f"{desc} (idx={idx})": (idx, desc) for idx, desc, _ in wifis}
             names = list(self.if_map.keys())
             self.combo["values"] = names
@@ -241,7 +260,6 @@ class NetworkMonitorApp:
             self.status_var.set(f"{len(names)} Wi-Fi adapter(s) found")
         except Exception as e:
             messagebox.showerror("Error", f"Lỗi khi load adapter: {e}")
-
     def set_status(self, text):
         self.status_var.set(text)
 
@@ -314,18 +332,24 @@ class NetworkMonitorApp:
         FreeMibTable(table_ptr)
         return iface
 
+    
     def _monitor_loop(self):
         start_time = time.time()
         while self.monitoring:
             time.sleep(1)
-            # read fresh table and find selected interface
             iface_row = self._get_iface_row(self.iface_index)
             if not iface_row:
                 self.set_status("Adapter lost")
                 break
 
+            # ✅ Thêm phần cảnh báo nếu Wi-Fi bị ngắt
+            if iface_row.OperStatus != IF_OPER_STATUS_UP:
+                self.root.after(0, lambda: messagebox.showwarning("Mất kết nối", "Wi-Fi đã bị ngắt hoặc mất tín hiệu."))
+                self.stop_monitor()
+                break
+            # === Kết thúc phần thêm ===
+
             in_new, out_new = iface_row.InOctets, iface_row.OutOctets
-            # compute Mbps (bits/sec) over 1s interval
             down_mbps = (in_new - self.in_old) * 8 / 1e6
             up_mbps = (out_new - self.out_old) * 8 / 1e6
             self.in_old, self.out_old = in_new, out_new
@@ -335,7 +359,6 @@ class NetworkMonitorApp:
             self.downloads.append(down_mbps)
             self.uploads.append(up_mbps)
 
-            # update numeric labels
             self.root.after(0, lambda: self.dl_var.set(f"{down_mbps:.2f} Mbps"))
             self.root.after(0, lambda: self.ul_var.set(f"{up_mbps:.2f} Mbps"))
             try:
@@ -344,7 +367,6 @@ class NetworkMonitorApp:
             except Exception:
                 pass
 
-            # write CSV if active
             if self.csv_writer:
                 try:
                     self.csv_writer.writerow([
@@ -357,12 +379,8 @@ class NetworkMonitorApp:
                 except Exception:
                     pass
 
-            # update chart
             self.root.after(0, self.update_plot)
-
-        # thread exit
         self.set_status("Idle")
-
     # ---------- plotting ----------
     def update_plot(self):
         if not self.times:
