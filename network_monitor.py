@@ -12,7 +12,7 @@ from datetime import datetime
 import os
 
 # =============================
-# Backend: API Windows Network (giữ nguyên)
+# Backend: API Windows Network 
 # =============================
 iphlpapi = ctypes.WinDLL("Iphlpapi.dll")
 
@@ -117,29 +117,25 @@ class NetworkMonitorApp:
         self.root.geometry("1100x660")
         self.root.minsize(900, 520)
 
-        # Grid base
         self.root.grid_rowconfigure(1, weight=1)
         self.root.grid_columnconfigure(1, weight=1)
 
-        # Header
         header = tk.Frame(self.root, bg="#1f2d3d", height=64)
         header.grid(row=0, column=0, columnspan=2, sticky="nsew")
         header.grid_propagate(False)
         tk.Label(header, text="📶 Network Monitor", bg="#1f2d3d", fg="white",
                  font=("Segoe UI", 18, "bold")).pack(side="left", padx=16)
 
-        # Left control panel
         control = ttk.Frame(self.root, padding=12)
         control.grid(row=1, column=0, sticky="nsew", padx=(12,6), pady=12)
         control.columnconfigure(0, weight=1)
 
-        # Right chart panel
         chart_panel = ttk.Frame(self.root, padding=6)
         chart_panel.grid(row=1, column=1, sticky="nsew", padx=(6,12), pady=12)
         chart_panel.rowconfigure(0, weight=1)
         chart_panel.columnconfigure(0, weight=1)
 
-        # ----- Left: controls -----
+
         ttk.Label(control, text="Adapter Wi-Fi:", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
         self.combo = ttk.Combobox(control, state="readonly")
         self.combo.grid(row=1, column=0, sticky="ew", pady=(6,8))
@@ -155,7 +151,7 @@ class NetworkMonitorApp:
         self.stop_btn = ttk.Button(btn_frame, text="⏹ Stop", command=self.stop_monitor, state="disabled")
         self.stop_btn.grid(row=0, column=2, padx=4, sticky="ew")
 
-        # status/info box
+
         info_frame = ttk.LabelFrame(control, text="Thông tin (Realtime)", padding=8)
         info_frame.grid(row=3, column=0, sticky="nsew", pady=(8,8))
         info_frame.columnconfigure(1, weight=1)
@@ -176,7 +172,6 @@ class NetworkMonitorApp:
         self.link_var = tk.StringVar(value="-- Mbps")
         ttk.Label(info_frame, textvariable=self.link_var).grid(row=3, column=1, sticky="w", pady=(6,0))
 
-        # Export / clear
         util_frame = ttk.Frame(control)
         util_frame.grid(row=4, column=0, sticky="ew", pady=(8,0))
         util_frame.columnconfigure((0,1), weight=1)
@@ -185,10 +180,8 @@ class NetworkMonitorApp:
         self.clear_btn = ttk.Button(util_frame, text="🧹 Clear Data", command=self.clear_data)
         self.clear_btn.grid(row=0, column=1, padx=4, sticky="ew")
 
-        # Footer note
         ttk.Label(control, text="Ghi chú: Đo bằng API Win32 (GetIfTable2)", foreground="gray").grid(row=5, column=0, sticky="w", pady=(12,0))
 
-        # ----- Right: chart -----
         self.fig = Figure(figsize=(6,4), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.ax.set_title("Network Throughput (Mbps)")
@@ -202,31 +195,25 @@ class NetworkMonitorApp:
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_panel)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-        # small status under chart
         bottom_info = ttk.Frame(chart_panel)
         bottom_info.grid(row=1, column=0, sticky="ew", pady=(8,0))
         bottom_info.columnconfigure(0, weight=1)
         self.chart_status = ttk.Label(bottom_info, text="No data", anchor="w")
         self.chart_status.grid(row=0, column=0, sticky="w")
 
-        # Data containers
         self.max_points = 60
         self.times = deque(maxlen=self.max_points)
         self.downloads = deque(maxlen=self.max_points)
         self.uploads = deque(maxlen=self.max_points)
 
-        # Monitoring control
         self.monitoring = False
         self.monitor_thread = None
         self.csv_file = None
         self.csv_writer = None
 
-        # Init adapters
         self.reload_adapters()
 
-    # ---------- UI helpers ----------
     def reload_adapters(self):
-        # ✅ Bổ sung: reset toàn bộ dữ liệu khi refresh
         self.times.clear()
         self.downloads.clear()
         self.uploads.clear()
@@ -244,7 +231,6 @@ class NetworkMonitorApp:
         self.line_up, = self.ax.plot([], [], label="Upload", linewidth=2, color="#ff7f0e")
         self.ax.legend(loc="upper right")
         self.canvas.draw_idle()
-        # === Kết thúc phần thêm ===
 
         try:
             wifis = get_wifi_interfaces()
@@ -263,7 +249,6 @@ class NetworkMonitorApp:
     def set_status(self, text):
         self.status_var.set(text)
 
-    # ---------- Monitor logic (keeps original backend usage) ----------
     def start_monitor(self):
         if not getattr(self, "if_map", None):
             messagebox.showwarning("Chưa chọn", "Vui lòng refresh và chọn adapter Wi-Fi.")
@@ -274,7 +259,6 @@ class NetworkMonitorApp:
             return
         self.iface_index, self.iface_desc = self.if_map[sel]
 
-        # get initial counters & link speed
         iface_row = self._get_iface_row(self.iface_index)
         if not iface_row:
             messagebox.showerror("Lỗi", "Không thể đọc thông tin adapter đã chọn.")
@@ -287,14 +271,13 @@ class NetworkMonitorApp:
         except Exception:
             self.link_var.set("-- Mbps")
 
-        # enable CSV export
         self.export_btn.config(state="normal")
 
         self.monitoring = True
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="enabled")
         self.set_status("Monitoring...")
-        # start thread
+
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
 
@@ -304,7 +287,6 @@ class NetworkMonitorApp:
         self.stop_btn.config(state="disabled")
         self.set_status("Stopped")
 
-        # close csv if open
         if self.csv_file:
             try:
                 self.csv_file.close()
@@ -342,12 +324,10 @@ class NetworkMonitorApp:
                 self.set_status("Adapter lost")
                 break
 
-            # ✅ Thêm phần cảnh báo nếu Wi-Fi bị ngắt
             if iface_row.OperStatus != IF_OPER_STATUS_UP:
                 self.root.after(0, lambda: messagebox.showwarning("Mất kết nối", "Wi-Fi đã bị ngắt hoặc mất tín hiệu."))
                 self.stop_monitor()
                 break
-            # === Kết thúc phần thêm ===
 
             in_new, out_new = iface_row.InOctets, iface_row.OutOctets
             down_mbps = (in_new - self.in_old) * 8 / 1e6
@@ -361,6 +341,7 @@ class NetworkMonitorApp:
 
             self.root.after(0, lambda: self.dl_var.set(f"{down_mbps:.2f} Mbps"))
             self.root.after(0, lambda: self.ul_var.set(f"{up_mbps:.2f} Mbps"))
+            
             try:
                 link_mbps = iface_row.ReceiveLinkSpeed / 1e6
                 self.root.after(0, lambda: self.link_var.set(f"{link_mbps:.1f} Mbps"))
@@ -381,7 +362,7 @@ class NetworkMonitorApp:
 
             self.root.after(0, self.update_plot)
         self.set_status("Idle")
-    # ---------- plotting ----------
+
     def update_plot(self):
         if not self.times:
             return
@@ -396,7 +377,6 @@ class NetworkMonitorApp:
         self.canvas.draw_idle()
         self.chart_status.config(text=f"Showing last {len(xs)} samples")
 
-    # ---------- CSV export ----------
     def export_csv(self):
         if not self.times:
             messagebox.showwarning("No Data", "Không có dữ liệu để xuất.")
@@ -412,8 +392,6 @@ class NetworkMonitorApp:
             with open(filename, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Timestamp", "Time(s)", "Download(Mbps)", "Upload(Mbps)"])
-                # We don't keep timestamps per-row in memory, only elapsed seconds; approximate by back-calculating
-                # Better: use csv_writer live during monitoring (we support both). For now write from buffers.
                 start = int(time.time()) - (self.times[-1] if self.times else 0)
                 for t, d, u in zip(self.times, self.downloads, self.uploads):
                     ts = datetime.fromtimestamp(start + t).strftime("%Y-%m-%d %H:%M:%S")
@@ -426,7 +404,7 @@ class NetworkMonitorApp:
         self.times.clear()
         self.downloads.clear()
         self.uploads.clear()
-        # reset labels
+
         self.dl_var.set("0.00 Mbps")
         self.ul_var.set("0.00 Mbps")
         self.link_var.set("-- Mbps")
